@@ -1,0 +1,1789 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>ANALISIS DE CARTERA</title>
+
+<!-- ============================================================
+     LIBRERIAS (CDN)
+     - PapaParse      : lectura de archivos CSV/DSV en el navegador
+     - Chart.js       : graficos (pie, barras, dispersion)
+     - simple-statistics : regresion lineal simple (window.ss)
+     - ml-regression-multivariate-linear : regresion lineal multiple
+       (se importa como modulo ESM mas abajo, con respaldo interno)
+     ============================================================ -->
+<script src="https://cdn.jsdelivr.net/npm/papaparse@5.4.1/papaparse.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/simple-statistics@7.8.8/dist/simple-statistics.min.js"></script>
+<script>
+  /* Importacion diferida de la libreria de regresion multiple.
+     Si el CDN no esta disponible, la aplicacion usa el solver OLS interno. */
+  (async function loadMLR() {
+    try {
+      const mod = await import('https://cdn.jsdelivr.net/npm/ml-regression-multivariate-linear@2.0.4/+esm');
+      window.MLR = mod.default || mod.MLR;
+      window.dispatchEvent(new Event('mlr-ready'));
+    } catch (e) {
+      console.warn('ml-regression-multivariate-linear no disponible, se usara el solver interno.', e);
+    }
+  })();
+</script>
+
+<style>
+/* ===================== TEMA / BASE ===================== */
+:root{
+  --naranja:#E67E22;
+  --naranja-osc:#C9620D;
+  --naranja-claro:#F39C12;
+  --naranja-suave:#FFF3E3;
+  --texto:#2C2C2C;
+  --texto-suave:#6B6B6B;
+  --linea:#E8E1D8;
+  --blanco:#FFFFFF;
+  --gris:#FAF8F5;
+  --verde:#1E8449;
+  --rojo:#C0392B;
+  --sombra:0 8px 24px rgba(120,70,10,.18);
+  --radio:14px;
+}
+*{box-sizing:border-box}
+html,body{margin:0;padding:0}
+body{
+  font-family:"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  color:var(--texto);
+  background:linear-gradient(160deg,#F39C12 0%,#E67E22 45%,#D35400 100%);
+  background-attachment:fixed;
+  min-height:100vh;
+  padding-bottom:40px;
+}
+
+/* ===================== ENCABEZADO ===================== */
+.app-header{
+  display:flex;flex-wrap:wrap;gap:16px;align-items:center;justify-content:space-between;
+  padding:22px 28px;background:rgba(255,255,255,.14);
+  border-bottom:1px solid rgba(255,255,255,.35);
+  backdrop-filter:blur(4px);
+}
+.brand{display:flex;align-items:center;gap:16px}
+.logo{
+  width:58px;height:58px;border-radius:16px;flex:0 0 auto;
+  background:var(--blanco);color:var(--naranja-osc);
+  display:flex;align-items:center;justify-content:center;
+  font-weight:800;font-size:20px;letter-spacing:1px;box-shadow:var(--sombra);
+}
+.app-header h1{
+  margin:0;font-size:30px;letter-spacing:2px;color:#fff;
+  text-shadow:0 2px 6px rgba(120,60,0,.35);
+}
+.app-header .sub{margin:4px 0 0;color:rgba(255,255,255,.92);font-size:13px}
+.badge{
+  display:inline-block;background:var(--blanco);color:var(--naranja-osc);
+  padding:8px 14px;border-radius:999px;font-size:12.5px;font-weight:700;box-shadow:var(--sombra)
+}
+
+/* ===================== PESTAÑAS ===================== */
+.tabs{display:flex;gap:10px;padding:18px 28px 0;flex-wrap:wrap}
+.tab{
+  border:0;cursor:pointer;font-size:14px;font-weight:700;padding:13px 20px;
+  border-radius:12px 12px 0 0;background:rgba(255,255,255,.35);color:#7A4A0A;
+  transition:.18s;
+}
+.tab:hover{background:rgba(255,255,255,.6)}
+.tab.active{background:var(--blanco);color:var(--naranja-osc);box-shadow:0 -3px 0 var(--naranja-osc) inset}
+
+/* ===================== LAYOUT ===================== */
+main{padding:0 28px}
+.tab-panel{display:none}
+.tab-panel.active{display:block}
+.card{
+  background:var(--blanco);border-radius:var(--radio);box-shadow:var(--sombra);
+  padding:20px 22px;margin:16px 0;
+}
+.card > h3{
+  margin:0 0 14px;font-size:16px;letter-spacing:.6px;text-transform:uppercase;
+  color:var(--naranja-osc);border-left:4px solid var(--naranja);padding-left:10px;
+}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.grid-3{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+@media (max-width:1000px){.grid-2,.grid-3{grid-template-columns:1fr}}
+.hint{font-size:12px;color:var(--texto-suave);margin:8px 0 0;line-height:1.5}
+
+/* ===================== CONTROLES ===================== */
+label.fld{display:block;font-size:12px;font-weight:700;color:var(--texto-suave);
+  text-transform:uppercase;letter-spacing:.5px;margin:12px 0 5px}
+select,input[type=text],input[type=number]{
+  width:100%;padding:10px 12px;border:1px solid var(--linea);border-radius:10px;
+  background:var(--gris);font-size:13.5px;color:var(--texto);font-family:inherit;
+}
+select:focus,input:focus{outline:2px solid rgba(230,126,34,.45);border-color:var(--naranja)}
+.btn{
+  cursor:pointer;border:0;border-radius:10px;padding:12px 20px;font-size:14px;font-weight:700;
+  font-family:inherit;transition:.18s;
+}
+.btn-primary{background:var(--naranja);color:#fff;box-shadow:0 4px 12px rgba(230,126,34,.45)}
+.btn-primary:hover{background:var(--naranja-osc)}
+.btn-primary:disabled{background:#D8CFC4;box-shadow:none;cursor:not-allowed}
+.btn-ghost{background:var(--naranja-suave);color:var(--naranja-osc);border:1px solid #F5D6A8}
+.btn-ghost:hover{background:#FBE3C4}
+.row{display:flex;gap:10px;align-items:flex-end;flex-wrap:wrap}
+.row > div{flex:1 1 190px}
+
+/* Dropzone */
+.dropzone{
+  border:2px dashed var(--naranja);border-radius:var(--radio);background:var(--naranja-suave);
+  padding:26px;text-align:center;cursor:pointer;transition:.2s;
+}
+.dropzone:hover,.dropzone.over{background:#FBE3C4;border-style:solid}
+.dropzone strong{display:block;font-size:16px;color:var(--naranja-osc);margin-bottom:4px}
+.dropzone span{font-size:12.5px;color:var(--texto-suave)}
+input[type=file]{display:none}
+
+/* Progreso */
+.progress-wrap{display:none;margin-top:14px}
+.progress-wrap.on{display:block}
+.progress{height:12px;background:#F1E7DA;border-radius:999px;overflow:hidden}
+.progress > i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--naranja-claro),var(--naranja));transition:width .2s}
+.progress-txt{font-size:12.5px;color:var(--texto-suave);margin-top:6px}
+
+/* KPIs */
+.kpis{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:14px;margin:16px 0}
+.kpi{
+  background:var(--blanco);border-radius:var(--radio);box-shadow:var(--sombra);
+  padding:16px 18px;border-top:4px solid var(--naranja);
+}
+.kpi .k-label{font-size:11.5px;text-transform:uppercase;letter-spacing:.6px;color:var(--texto-suave);font-weight:700}
+.kpi .k-value{font-size:23px;font-weight:800;color:var(--naranja-osc);margin-top:6px;word-break:break-word}
+.kpi .k-sub{font-size:11.5px;color:var(--texto-suave);margin-top:3px}
+
+/* Tablas */
+.table-wrap{max-height:430px;overflow:auto;border:1px solid var(--linea);border-radius:10px}
+table{border-collapse:collapse;width:100%;font-size:13px}
+th,td{padding:8px 10px;text-align:left;border-bottom:1px solid var(--linea);white-space:nowrap}
+th{
+  position:sticky;top:0;background:var(--naranja);color:#fff;font-size:11.5px;
+  text-transform:uppercase;letter-spacing:.5px;z-index:2;
+}
+tbody tr:nth-child(even){background:var(--gris)}
+tbody tr:hover{background:var(--naranja-suave)}
+td.num,th.num{text-align:right;font-variant-numeric:tabular-nums}
+td.pobre{color:var(--rojo);font-weight:700}
+.tag-alerta{
+  display:inline-block;font-size:10px;font-weight:700;background:#FDEDEC;color:var(--rojo);
+  border:1px solid #F5B7B1;border-radius:6px;padding:0 5px;margin-left:5px;white-space:nowrap
+}
+
+/* Multi-select (dropdown con checkboxes) */
+.ms{position:relative;min-width:200px;flex:1 1 200px}
+.ms-btn{
+  width:100%;text-align:left;cursor:pointer;border:1px solid var(--linea);background:var(--gris);
+  border-radius:10px;padding:10px 12px;font-size:13px;font-family:inherit;color:var(--texto);
+  display:flex;justify-content:space-between;gap:8px;align-items:center;
+}
+.ms-btn.active{border-color:var(--naranja);background:var(--naranja-suave);font-weight:700;color:var(--naranja-osc)}
+.ms-panel{
+  display:none;position:absolute;z-index:40;top:calc(100% + 6px);left:0;width:300px;max-width:90vw;
+  background:#fff;border:1px solid var(--linea);border-radius:12px;box-shadow:var(--sombra);padding:10px;
+}
+.ms-panel.open{display:block}
+.ms-actions{display:flex;gap:6px;margin:8px 0}
+.ms-actions button{
+  flex:1;cursor:pointer;font-size:11.5px;font-weight:700;border:1px solid #F5D6A8;background:var(--naranja-suave);
+  color:var(--naranja-osc);border-radius:8px;padding:6px 4px;font-family:inherit;
+}
+.ms-list{max-height:230px;overflow:auto;margin-top:6px;border-top:1px solid var(--linea);padding-top:8px}
+.ms-list label{display:flex;gap:8px;align-items:center;font-size:12.5px;padding:4px 2px;cursor:pointer;border-radius:6px}
+.ms-list label:hover{background:var(--naranja-suave)}
+.ms-list input{width:auto;accent-color:var(--naranja)}
+.ms-empty{font-size:12px;color:var(--texto-suave);padding:8px 2px}
+
+/* Checklist de variables X */
+.checklist{
+  max-height:260px;overflow:auto;border:1px solid var(--linea);border-radius:10px;
+  padding:8px;background:var(--gris);margin-top:6px;
+}
+.checklist label{display:flex;gap:9px;align-items:flex-start;font-size:12.5px;padding:5px 4px;border-radius:7px;cursor:pointer;line-height:1.35}
+.checklist label:hover{background:var(--naranja-suave)}
+.checklist input{width:auto;margin-top:2px;accent-color:var(--naranja)}
+
+/* Metricas / ecuacion */
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:12px}
+.metric{background:var(--gris);border:1px solid var(--linea);border-radius:11px;padding:12px;text-align:center}
+.metric .m-label{font-size:11px;color:var(--texto-suave);font-weight:700;text-transform:uppercase;letter-spacing:.4px}
+.metric .m-value{font-size:19px;font-weight:800;color:var(--naranja-osc);margin-top:5px}
+.equation{
+  margin-top:14px;background:#FFFBF4;border:1px solid #F5D6A8;border-left:5px solid var(--naranja);
+  border-radius:10px;padding:12px 14px;font-family:Consolas,"Courier New",monospace;font-size:13px;
+  line-height:1.7;word-break:break-word;
+}
+.cat-list{margin:10px 0 0;padding:0;list-style:none;font-size:12.5px}
+.cat-list li{padding:3px 0;border-bottom:1px dashed var(--linea);display:flex;justify-content:space-between;gap:10px}
+.swatch{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px}
+
+/* Simulador */
+.inputs{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-top:10px}
+.pred-box{
+  margin-top:14px;background:var(--naranja-suave);border:1px solid #F5D6A8;border-radius:12px;
+  padding:16px;display:none;
+}
+.pred-box.on{display:block}
+.pred-value{font-size:30px;font-weight:800;color:var(--naranja-osc);margin:6px 0}
+.alert{border-radius:10px;padding:11px 14px;font-size:13px;margin:10px 0}
+.alert-info{background:var(--naranja-suave);color:#8A5008;border:1px solid #F5D6A8}
+.alert-err{background:#FDEDEC;color:var(--rojo);border:1px solid #F5B7B1}
+.alert-ok{background:#EAFAF1;color:var(--verde);border:1px solid #A9DFBF}
+.chart-box{position:relative;height:340px}
+.chart-box.tall{height:400px}
+footer{text-align:center;color:rgba(255,255,255,.9);font-size:12px;padding:22px 28px 0}
+</style>
+</head>
+<body>
+
+<header class="app-header">
+  <div class="brand">
+    <div class="logo">AC</div>
+    <div>
+      <h1>ANALISIS DE CARTERA</h1>
+      <p class="sub">Dashboard interactivo de cartera de cr&eacute;ditos &middot; Exploraci&oacute;n, segmentaci&oacute;n y modelo de regresi&oacute;n lineal</p>
+    </div>
+  </div>
+  <div><span class="badge" id="fileBadge">Sin datos cargados</span></div>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="carga">1. Carga de Datos y Exploraci&oacute;n</button>
+  <button class="tab" data-tab="dashboard">2. Dashboard de Cartera</button>
+  <button class="tab" data-tab="modelo">3. Modelo Predictivo (Regresi&oacute;n)</button>
+</nav>
+
+<main>
+
+  <!-- ============================================================
+       PESTAÑA 1 : CARGA Y EXPLORACION
+       ============================================================ -->
+  <section id="tab-carga" class="tab-panel active">
+
+    <div class="card">
+      <h3>Carga del archivo de cartera</h3>
+      <div class="dropzone" id="dropzone">
+        <strong>Arrastre el archivo aqu&iacute; o haga clic para seleccionarlo</strong>
+        <span>Recomendado: <b>Base_reducida.csv</b> (84 variables ya depuradas). Tambi&eacute;n acepta Base_modificada.csv u otros archivos CSV / TXT / delimitados (coma, punto y coma, pipe |, tabulador).<br>
+        El archivo NO se sube a internet: se procesa 100% en su navegador.</span>
+      </div>
+      <input type="file" id="fileInput" accept=".csv,.txt,.dsv,text/csv,text/plain" />
+
+      <div class="row" style="margin-top:14px">
+        <div>
+          <label class="fld">Delimitador</label>
+          <select id="delimiter">
+            <option value="">Detectar autom&aacute;ticamente</option>
+            <option value=",">, (coma)</option>
+            <option value=";">; (punto y coma)</option>
+            <option value="|">| (pipe)</option>
+            <option value="&#9;">Tab</option>
+          </select>
+        </div>
+        <div>
+          <label class="fld">Primera fila con nombres de variables</label>
+          <select id="hasHeader"><option value="1">S&iacute;</option><option value="0">No</option></select>
+        </div>
+        <div>
+          <label class="fld">L&iacute;mite de filas (0 = todas)</label>
+          <input type="number" id="maxRows" value="0" min="0" step="1000" />
+        </div>
+        <div style="flex:0 0 auto">
+          <button class="btn btn-primary" id="btnReload" disabled>Cargar de nuevo</button>
+        </div>
+      </div>
+
+      <div class="progress-wrap" id="progressWrap">
+        <div class="progress"><i id="progressBar"></i></div>
+        <div class="progress-txt" id="progressTxt">0%</div>
+      </div>
+      <div id="loadMsg"></div>
+    </div>
+
+    <div id="exploreSection" style="display:none">
+      <div class="kpis" id="loadKpis"></div>
+
+      <div class="card">
+        <h3>Variables detectadas autom&aacute;ticamente</h3>
+        <p class="hint">
+          El aplicativo reconoce todas las columnas del archivo, infiere su tipo y calcula estad&iacute;sticos b&aacute;sicos.
+          Use la b&uacute;squeda para localizar una variable.
+        </p>
+        <input type="text" id="colSearch" placeholder="Buscar variable por nombre..." style="margin-top:8px" />
+        <div class="table-wrap" style="margin-top:10px">
+          <table id="colsTable">
+            <thead><tr>
+              <th>#</th><th>Variable</th><th>Tipo</th><th class="num">Vac&iacute;as (filas y %)</th>
+              <th class="num">Valores &uacute;nicos</th><th class="num">M&iacute;n</th><th class="num">M&aacute;x</th><th class="num">Promedio</th>
+            </tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="grid-2">
+        <div class="card">
+          <h3>Explorador de una variable</h3>
+          <label class="fld">Variable</label>
+          <select id="exploreCol"></select>
+          <div class="table-wrap" style="margin-top:12px;max-height:260px">
+            <table id="valuesTable">
+              <thead><tr><th>Valor / Rango</th><th class="num">Frecuencia</th><th class="num">%</th></tr></thead>
+              <tbody></tbody>
+            </table>
+          </div>
+        </div>
+        <div class="card">
+          <h3 id="exploreChartTitle">Distribuci&oacute;n</h3>
+          <div class="chart-box"><canvas id="exploreChart"></canvas></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h3>Vista previa de los datos (primeras 50 filas)</h3>
+        <div class="table-wrap" style="max-height:340px">
+          <table id="previewTable"><thead></thead><tbody></tbody></table>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       PESTAÑA 2 : DASHBOARD DESCRIPTIVO
+       ============================================================ -->
+  <section id="tab-dashboard" class="tab-panel">
+    <div class="card">
+      <h3>Segmentaci&oacute;n de la cartera</h3>
+      <div class="row" id="filtersBar"></div>
+      <div class="row" style="margin-top:12px">
+        <div>
+          <label class="fld">M&eacute;trica de an&aacute;lisis</label>
+          <select id="metricSel">
+            <option value="monto">Monto acumulado</option>
+            <option value="recuento">Recuento de operaciones</option>
+          </select>
+        </div>
+        <div>
+          <label class="fld">Dimensi&oacute;n del gr&aacute;fico circular</label>
+          <select id="pieDimSel"></select>
+        </div>
+        <div style="flex:0 0 auto">
+          <button class="btn btn-ghost" id="btnClearFilters">Limpiar filtros</button>
+        </div>
+      </div>
+      <p class="hint" id="filteredInfo">Sin datos.</p>
+
+      <details style="margin-top:12px">
+        <summary style="cursor:pointer;font-size:13px;font-weight:700;color:var(--naranja-osc)">
+          Configuraci&oacute;n avanzada de variables (mapeo de columnas)
+        </summary>
+        <p class="hint">
+          El mapeo se detecta autom&aacute;ticamente por el nombre de la columna. Si su archivo usa otros nombres,
+          aj&uacute;stelo aqu&iacute;.
+        </p>
+        <div class="row" id="mapBar" style="margin-top:10px"></div>
+      </details>
+    </div>
+
+    <div class="kpis" id="dashKpis"></div>
+
+    <div class="grid-2">
+      <div class="card">
+        <h3 id="pieCardTitle">% Estado de Cartera</h3>
+        <div class="chart-box"><canvas id="pieChart"></canvas></div>
+        <ul class="cat-list" id="pieList"></ul>
+      </div>
+      <div class="card">
+        <h3 id="barCardTitle">Clasificaci&oacute;n por Rubro</h3>
+        <div class="chart-box"><canvas id="barChart"></canvas></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>Resumen por Regional</h3>
+      <div class="table-wrap">
+        <table id="regionalTable">
+          <thead><tr>
+            <th>Regional</th><th class="num">Operaciones</th><th class="num">% Ops.</th>
+            <th class="num">Monto</th><th class="num">% Monto</th><th class="num">Previsi&oacute;n</th>
+            <th class="num">Atraso promedio (d&iacute;as)</th>
+          </tr></thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============================================================
+       PESTAÑA 3 : MODELO PREDICTIVO
+       ============================================================ -->
+  <section id="tab-modelo" class="tab-panel">
+    <div class="grid-2">
+      <div class="card">
+        <h3>Selecci&oacute;n de variables</h3>
+        <label class="fld">Variable dependiente (Y)</label>
+        <select id="varY"></select>
+
+        <label class="fld">Variables independientes (X1, X2, ...)</label>
+        <input type="text" id="xSearch" placeholder="Buscar variable num&eacute;rica..." />
+        <div class="checklist" id="varXList"></div>
+
+        <div class="row" style="margin-top:12px">
+          <div>
+            <label class="fld">Tama&ntilde;o de muestra</label>
+            <select id="sampleSize">
+              <option value="5000">5.000 registros</option>
+              <option value="20000" selected>20.000 registros</option>
+              <option value="50000">50.000 registros</option>
+              <option value="0">Todas las filas v&aacute;lidas</option>
+            </select>
+          </div>
+          <div style="flex:0 0 auto">
+            <button class="btn btn-primary" id="btnModel">Construir Modelo</button>
+          </div>
+        </div>
+        <p class="hint" id="engineNote">
+          Motor de c&aacute;lculo: se usan <b>simple-statistics</b> (una X) y <b>ml-regression-multivariate-linear</b> (varias X),
+          con solver OLS interno como respaldo. S&iacute; y X deben ser variables num&eacute;ricas.
+        </p>
+      </div>
+
+      <div class="card">
+        <h3>Desempe&ntilde;o del modelo</h3>
+        <div id="modelMsg"><div class="alert alert-info">Seleccione Y y al menos una X, luego presione <b>Construir Modelo</b>.</div></div>
+        <div class="metrics" id="metricsBox"></div>
+        <div class="equation" id="equationBox" style="display:none"></div>
+        <div class="table-wrap" style="margin-top:14px;display:none" id="coefWrap">
+          <table id="coefTable">
+            <thead><tr><th>Variable</th><th class="num">Coeficiente</th><th class="num">Error std.</th><th class="num">t</th><th>Signif.</th></tr></thead>
+            <tbody></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3 id="modelChartTitle">Gr&aacute;fico del modelo</h3>
+      <div class="chart-box tall"><canvas id="modelChart"></canvas></div>
+      <p class="hint" id="modelChartNote"></p>
+    </div>
+
+    <div class="card">
+      <h3>Simulador de predicciones</h3>
+      <p class="hint">Ingrese valores para cada variable independiente del modelo y obtenga el valor estimado de Y.</p>
+      <div class="inputs" id="predictInputs"></div>
+      <div style="margin-top:14px">
+        <button class="btn btn-primary" id="btnPredict" disabled>Realizar Predicci&oacute;n</button>
+      </div>
+      <div class="pred-box" id="predBox">
+        <div class="k-label">Valor estimado de <span id="predVarName">Y</span></div>
+        <div class="pred-value" id="predValue">-</div>
+        <div class="k-sub" id="predDetail"></div>
+      </div>
+    </div>
+  </section>
+</main>
+
+<footer>ANALISIS DE CARTERA &middot; aplicaci&oacute;n local de an&aacute;lisis financiero (PapaParse + Chart.js + regresi&oacute;n lineal)</footer>
+
+<script>
+/* ==================================================================================
+   ANALISIS DE CARTERA - Logica de la aplicacion
+   ----------------------------------------------------------------------------------
+   Estructura del script:
+     0. Utilidades generales (formato de numeros, parseo de numeros, DOM)
+     1. Estado global
+     2. Carga del archivo (PapaParse en streaming) y deteccion del delimitador
+     3. Tipificacion de variables y estadisticos descriptivos
+     4. Mapeo automatico de columnas clave (Regional, Rubro, Destino, CAEDEC, ...)
+     5. Dashboard: filtros (dropdowns con checkbox), agregaciones y graficos
+     6. Modelo predictivo: OLS simple y multiple (algebra matricial) + metricas
+     7. Simulador de predicciones
+   ================================================================================== */
+(function () {
+  'use strict';
+
+  /* ============================================================
+     0. UTILIDADES
+     ============================================================ */
+  const $ = (id) => document.getElementById(id);
+  const fmtInt = new Intl.NumberFormat('es-BO', { maximumFractionDigits: 0 });
+  const fmtNum = new Intl.NumberFormat('es-BO', { minimumFractionDigits: 0, maximumFractionDigits: 2 });
+  const fmtPct = (v) => (isFinite(v) ? (v * 100).toFixed(2) + '%' : '-');
+
+  function fmt(v) { return v === null || v === undefined || !isFinite(v) ? '-' : fmtNum.format(v); }
+
+  /** Formato compacto para ejes de graficos (mil / millon / mil millones) */
+  function fmtCompact(v) {
+    const a = Math.abs(v);
+    if (a >= 1e9) return (v / 1e9).toFixed(2) + ' MM';
+    if (a >= 1e6) return (v / 1e6).toFixed(2) + ' M';
+    if (a >= 1e3) return (v / 1e3).toFixed(1) + ' K';
+    return fmtNum.format(v);
+  }
+
+  /** Convierte un texto en numero. Devuelve null si el texto NO es completamente numerico.
+   *  Soporta: "1.234,56" (formato local), "1,234.56" (formato ingles), "(150)" (negativo contable)
+   *  y simbolos de moneda al inicio (Bs, $us).
+   *  IMPORTANTE: es deliberadamente ESTRICTO. Un valor como "20 LA PAZ" o "1053 DIAS" NO es
+   *  numerico (antes se tomaba su parte inicial con parseFloat, lo que hacia que columnas de
+   *  dimension como Regional o Rubro se trataran como numeros y perdieran sus etiquetas). */
+  function parseNum(v) {
+    if (typeof v === 'number') return isFinite(v) ? v : null;
+    if (v === null || v === undefined) return null;
+    let s = String(v).trim();
+    if (s === '') return null;
+    let neg = false;
+    if (/^\(.*\)$/.test(s)) { neg = true; s = s.slice(1, -1).replace(/\s/g, ''); }
+    s = s.replace(/\s/g, '').replace(/^(bs\.?|sus|\$us|\$)/i, '').replace(/^(bs\.?|sus|\$us|\$)/i, '');
+    if (s === '' || s === '-' || s === '.') return null;
+    if (/^-?\d+(\.\d+)?$/.test(s)) { const n = parseFloat(s); return neg ? -n : n; }
+    // Separadores de miles anglosajones: 1,234,567.89
+    if (/^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(s)) { const n = parseFloat(s.replace(/,/g, '')); return neg ? -n : n; }
+    // Separadores de miles locales: 1.234.567,89
+    if (/^-?\d{1,3}(\.\d{3})+(,\d+)?$/.test(s)) { const n = parseFloat(s.replace(/\./g, '').replace(',', '.')); return neg ? -n : n; }
+    // Decimal con coma: 1234,56
+    if (/^-?\d+,\d+$/.test(s)) { const n = parseFloat(s.replace(',', '.')); return neg ? -n : n; }
+    return null;              // texto mixto ("20 LA PAZ", "M7 MICROCREDITO", fechas, etc.)
+  }
+
+  /** Valor numerico seguro (0 cuando no hay dato) */
+  function num(v) { if (typeof v === 'number') return isFinite(v) ? v : 0; const n = parseNum(v); return n === null ? 0 : n; }
+  /** Valor numerico o null (para variables con dato faltante) */
+  function numOrNull(v) { if (typeof v === 'number') return isFinite(v) ? v : null; return parseNum(v); }
+
+  /** Normaliza un valor categorico para comparaciones / filtros */
+  function norm(v) { return v === null || v === undefined ? '' : String(v).trim().toUpperCase(); }
+
+  /** Quita prefijos numericos de los nombres de columna: "39.Destino" -> "destino" */
+  function normName(name) {
+    return String(name)
+      .replace(/^\s*\d+\s*[\.\)\-]\s*/, '')     // "39." / "39)" / "39-"
+      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .toLowerCase().replace(/\s+/g, ' ').trim();
+  }
+
+  function escapeHtml(s) {
+    return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function debounce(fn, ms) { let t; return function () { clearTimeout(t); const a = arguments, s = this; t = setTimeout(() => fn.apply(s, a), ms); }; }
+
+  const PALETA = ['#E67E22', '#2E86C1', '#27AE60', '#8E44AD', '#C0392B', '#F1C40F', '#16A085', '#D35400',
+    '#2980B9', '#7D3C98', '#229954', '#B03A2E', '#AF7AC5', '#5DADE2', '#F5B041', '#48C9B0',
+    '#EC7063', '#AAB7B8', '#212F3D', '#EDBB99'];
+
+  /* ============================================================
+     1. ESTADO GLOBAL
+     ============================================================ */
+  const state = {
+    fileName: '',
+    headers: [],        // nombres de las variables
+    rows: [],           // matriz de datos: Array<Array<string|number|null>>
+    colInfo: [],        // metadatos por columna calculados en el analisis descriptivo
+    numericCols: [],    // indices de columnas numericas
+    catCols: [],        // indices de columnas categoricas
+    mapping: {},        // rol -> indice de columna
+    filters: {},        // rol -> Set de valores normalizados (null = todos)
+    metric: 'monto',    // metrica activa del dashboard
+    pieDim: -1,         // columna del grafico circular
+    charts: {},         // instancias de Chart.js
+    model: null,        // modelo de regresion entrenado
+    filteredIndex: null, // ultimo subconjunto filtrado (referencias a filas)
+    loadToken: 0        // token de carga: invalida procesos de carga anteriores
+  };
+
+  /* ============================================================
+     2. CARGA DEL ARCHIVO (PapaParse en modo streaming)
+     ============================================================ */
+  const dropzone = $('dropzone');
+  const fileInput = $('fileInput');
+
+  dropzone.addEventListener('click', () => fileInput.click());
+  dropzone.addEventListener('dragover', (e) => { e.preventDefault(); dropzone.classList.add('over'); });
+  dropzone.addEventListener('dragleave', () => dropzone.classList.remove('over'));
+  dropzone.addEventListener('drop', (e) => {
+    e.preventDefault(); dropzone.classList.remove('over');
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) startLoad(e.dataTransfer.files[0]);
+  });
+  fileInput.addEventListener('change', () => { if (fileInput.files[0]) startLoad(fileInput.files[0]); });
+  $('btnReload').addEventListener('click', () => { fileInput.value = ''; fileInput.click(); });
+
+  function setProgress(p, txt) {
+    $('progressBar').style.width = Math.max(0, Math.min(100, p)) + '%';
+    $('progressTxt').textContent = txt || (p.toFixed(1) + '%');
+  }
+  function setMsg(html, cls) {
+    $('loadMsg').innerHTML = html ? '<div class="alert ' + (cls || 'alert-info') + '">' + html + '</div>' : '';
+  }
+
+  /** Detecta el delimitador contando ocurrencias en la primera linea (fuera de comillas) */
+  function detectDelimiter(sampleText) {
+    const firstLine = sampleText.split(/\r?\n/)[0] || '';
+    const candidates = [',', ';', '|', '\t'];
+    let best = ',', bestCount = 0;
+    candidates.forEach((d) => {
+      // contar solo delimitadores que no esten dentro de comillas
+      let count = 0, inQ = false;
+      for (let i = 0; i < firstLine.length; i++) {
+        const ch = firstLine[i];
+        if (ch === '"') inQ = !inQ;
+        else if (!inQ && ch === d) count++;
+      }
+      if (count > bestCount) { bestCount = count; best = d; }
+    });
+    return best;
+  }
+
+  function startLoad(file) {
+    if (typeof Papa === 'undefined') {
+      setMsg('No se pudo cargar PapaParse desde el CDN. Verifique su conexion a internet y recargue la pagina.', 'alert-err');
+      return;
+    }
+    // Cada carga incrementa el token: cualquier parser o analisis anterior deja de
+    // escribir en el estado (evita que dos cargas simultaneas mezclen registros).
+    state.loadToken++;
+    const token = state.loadToken;
+
+    state.fileName = file.name;
+    state.headers = []; state.rows = []; state.colInfo = []; state.numericCols = []; state.catCols = [];
+    state.filters = {}; state.model = null; state.filteredIndex = null;
+    resetModelUI();
+    $('btnReload').disabled = true;
+    $('exploreSection').style.display = 'none';
+    $('progressWrap').classList.add('on');
+    setProgress(0, 'Leyendo el archivo...');
+    setMsg('Procesando <b>' + escapeHtml(file.name) + '</b> (' + (file.size / 1048576).toFixed(1) + ' MB). Los archivos grandes pueden tardar unos segundos...');
+
+    const headerFlag = $('hasHeader').value === '1';
+    const maxRows = parseInt($('maxRows').value, 10) || 0;
+    const manualDelim = $('delimiter').value;
+    const t0 = performance.now();
+
+    // 1) Leer una muestra para detectar el delimitador automaticamente
+    const probe = file.slice(0, Math.min(file.size, 131072));
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      if (token !== state.loadToken) return;                  // se inicio otra carga mientras tanto
+      const delimiter = manualDelim || detectDelimiter(String(ev.target.result));
+      parseFile(file, delimiter, headerFlag, maxRows, t0, token);
+    };
+    reader.onerror = () => setMsg('No se pudo leer el archivo seleccionado.', 'alert-err');
+    reader.readAsText(probe);
+  }
+
+  function parseFile(file, delimiter, headerFlag, maxRows, t0, token) {
+    const raw = [];          // filas crudas mientras se parsea
+    let headerRow = null;
+    let aborted = false;
+
+    // En file:// algunos navegadores bloquean los Web Workers creados desde Blob,
+    // por eso se desactiva el worker cuando la pagina se abre con doble clic.
+    const useWorker = location.protocol !== 'file:';
+
+    const config = {
+      delimiter: delimiter,
+      header: false,
+      skipEmptyLines: 'greedy',
+      dynamicTyping: false,
+      worker: useWorker,
+      chunkSize: 1024 * 1024 * 4,
+      chunk: function (results, parser) {
+        if (token !== state.loadToken) { parser.abort(); return; }   // carga obsoleta: se descarta
+        const data = results.data || [];
+        for (let i = 0; i < data.length; i++) {
+          if (headerFlag && raw.length === 0 && !headerRow) { headerRow = data[i]; continue; }
+          raw.push(data[i]);
+          if (maxRows > 0 && raw.length >= maxRows) { aborted = true; parser.abort(); break; }
+        }
+        const cursor = (results.meta && results.meta.cursor) || 0;
+        setProgress(Math.min(99, (cursor / file.size) * 100),
+          fmtInt.format(raw.length) + ' filas procesadas (' + Math.min(99, (cursor / file.size) * 100).toFixed(0) + '%)');
+      },
+      complete: function () {
+        if (token !== state.loadToken) return;                       // carga obsoleta: se descarta
+        setProgress(100, 'Archivo leido. Analizando variables...');
+        finishLoad(raw, headerRow, t0, aborted, token);
+      },
+      error: function (err) {
+        if (token !== state.loadToken) return;
+        setMsg('Error al leer el archivo: ' + escapeHtml(err.message || err), 'alert-err');
+      }
+    };
+
+    try {
+      Papa.parse(file, config);
+    } catch (e) {
+      // Respaldo: si el worker falla, se reintenta en el hilo principal
+      console.warn('Reintentando sin Web Worker...', e);
+      raw.length = 0; headerRow = null;
+      config.worker = false;
+      Papa.parse(file, config);
+    }
+  }
+
+  /** Analiza todas las filas: infiere tipos, convierte numeros y calcula estadisticos.
+   *  Se ejecuta por bloques con "await" para que la barra de progreso se actualice. */
+  async function finishLoad(raw, headerRow, t0, aborted, token) {
+    if (!raw.length) {
+      setMsg('El archivo no contiene filas de datos. Verifique el delimitador seleccionado.', 'alert-err');
+      $('progressWrap').classList.remove('on');
+      return;
+    }
+    const nCols = raw.reduce((m, r) => Math.max(m, r.length), 0);
+
+    // Nombres de variables: de la primera fila o generados
+    if (headerRow) {
+      state.headers = [];
+      for (let c = 0; c < nCols; c++) {
+        const h = headerRow[c] === undefined || String(headerRow[c]).trim() === '' ? 'V' + (c + 1) : String(headerRow[c]).trim();
+        state.headers.push(h);
+      }
+    } else {
+      state.headers = Array.from({ length: nCols }, (_, c) => 'V' + (c + 1));
+    }
+
+    // --- Inferencia de tipo con una muestra (max 1000 filas) ---
+    const sample = raw.slice(0, Math.min(raw.length, 1000));
+    const isNumericCol = new Array(nCols).fill(true);
+    for (let c = 0; c < nCols; c++) {
+      let nonEmpty = 0, numeric = 0;
+      for (let r = 0; r < sample.length; r++) {
+        const v = sample[r][c];
+        if (v === undefined || String(v).trim() === '') continue;
+        nonEmpty++;
+        if (parseNum(v) !== null) numeric++;
+      }
+      // Una columna es numerica si al menos el 85% de los valores no vacios son numeros
+      isNumericCol[c] = nonEmpty > 0 && numeric / nonEmpty >= 0.85;
+    }
+
+    // --- Mapeo automatico ANTES de tipificar: las columnas de dimension se fuerzan a categorica ---
+    const metaTmp = state.headers.map((name, i) => ({ index: i, name: name, numeric: isNumericCol[i] }));
+    const numericTmp = metaTmp.filter((c) => c.numeric).map((c) => c.index);
+    const mapa = computeMapping(metaTmp, numericTmp);
+    ROLES_DIMENSION.forEach((rol) => { const c = mapa[rol]; if (c >= 0) isNumericCol[c] = false; });
+
+    // --- Conversion + estadisticos en una sola pasada, por bloques ---
+    state.colInfo = state.headers.map((name, c) => ({
+      index: c, name: name, numeric: isNumericCol[c],
+      empty: 0, n: 0, sum: 0, min: Infinity, max: -Infinity,
+      distinct: new Set(), counts: isNumericCol[c] ? null : new Map(), truncated: false
+    }));
+    const LIMITE_UNICOS = 1000;
+
+    state.rows = [];
+    const BLOQUE = 4000;
+    for (let start = 0; start < raw.length; start += BLOQUE) {
+      const end = Math.min(raw.length, start + BLOQUE);
+      for (let r = start; r < end; r++) {
+        const src = raw[r];
+        const row = new Array(nCols);
+        for (let c = 0; c < nCols; c++) {
+          const info = state.colInfo[c];
+          const v = src[c];
+          if (v === undefined || v === null || String(v).trim() === '') {
+            row[c] = null; info.empty++;
+            continue;
+          }
+          if (info.numeric) {
+            const n = parseNum(v);
+            row[c] = n;                       // null si el texto no era numerico
+            if (n !== null) {
+              info.n++; info.sum += n;
+              if (n < info.min) info.min = n;
+              if (n > info.max) info.max = n;
+            } else { info.empty++; }
+          } else {
+            const s = String(v).trim();
+            row[c] = s;
+            if (info.distinct.size < LIMITE_UNICOS) info.distinct.add(s);
+            else if (!info.distinct.has(s)) { info.truncated = true; info.distinct.add('__TRUNC__'); }
+            if (!info.truncated) {
+              info.counts.set(s, (info.counts.get(s) || 0) + 1);
+            }
+          }
+        }
+        state.rows.push(row);
+      }
+      setProgress(100, 'Analizando variables... ' + fmtInt.format(state.rows.length) + ' / ' + fmtInt.format(raw.length));
+      await new Promise((res) => setTimeout(res, 0));   // cede el hilo al navegador
+      if (token !== state.loadToken) { console.warn('Carga reemplazada por una mas reciente; se descarta el analisis.'); return; }
+    }
+
+    state.colInfo.forEach((info) => {
+      if (info.min === Infinity) { info.min = null; info.max = null; }
+      info.mean = info.n ? info.sum / info.n : null;
+    });
+    state.numericCols = state.colInfo.filter((c) => c.numeric).map((c) => c.index);
+    state.catCols = state.colInfo.filter((c) => !c.numeric).map((c) => c.index);
+
+    // Mapeo definitivo de las columnas clave + estado inicial de filtros (ninguno activo)
+    state.mapping = mapa;
+    state.pieDim = mapa.estado >= 0 ? mapa.estado
+      : (mapa.categoria >= 0 ? mapa.categoria : (state.catCols.length ? state.catCols[0] : 0));
+    state.filters = {}; MAP_DEFS.forEach((d) => { state.filters[d.key] = null; });
+
+    const elapsed = ((performance.now() - t0) / 1000).toFixed(2);
+    $('progressWrap').classList.remove('on');
+    $('btnReload').disabled = false;
+    $('fileBadge').textContent = state.fileName + ' · ' + fmtInt.format(state.rows.length) + ' filas × ' + state.headers.length + ' variables';
+    setMsg('Archivo cargado correctamente' + (aborted ? ' (se alcanzo el limite de filas configurado)' : '') + ' en ' + elapsed + ' s.', 'alert-ok');
+
+    // La seccion debe ser visible ANTES de crear los graficos: Chart.js mide el contenedor
+    // al construirse y un canvas dentro de un contenedor oculto queda en 0x0.
+    $('exploreSection').style.display = 'block';
+    renderLoadKpis(elapsed);
+    renderColsTable();
+    renderExploreSelectors();
+    renderPreview();
+    buildFilterBar();
+    buildMappingBar();
+    buildPieDimSelect();
+    buildModelSelectors();
+    showTab('dashboard'); // el dashboard ya puede explorarse
+  }
+
+  /* ============================================================
+     3. RENDER DE LA PESTAÑA 1 (carga / exploracion)
+     ============================================================ */
+  function renderLoadKpis(elapsed) {
+    const vacios = state.colInfo.reduce((s, c) => s + c.empty, 0);
+    const total = state.rows.length * state.headers.length;
+    const kpis = [
+      ['Registros', fmtInt.format(state.rows.length), 'filas de datos'],
+      ['Variables', fmtInt.format(state.headers.length), state.numericCols.length + ' numéricas · ' + state.catCols.length + ' categóricas'],
+      ['Celdas vacías', fmtPct(total ? vacios / total : 0), fmtInt.format(vacios) + ' celdas'],
+      ['Tiempo de proceso', elapsed + ' s', 'procesamiento 100% local']
+    ];
+    $('loadKpis').innerHTML = kpis.map((k) =>
+      '<div class="kpi"><div class="k-label">' + k[0] + '</div><div class="k-value">' + k[1] + '</div><div class="k-sub">' + k[2] + '</div></div>').join('');
+  }
+
+  function renderColsTable() {
+    const tbody = $('colsTable').querySelector('tbody');
+    const q = normName($('colSearch').value || '');
+    const filas = state.colInfo.filter((c) => !q || normName(c.name).indexOf(q) >= 0);
+    const nFilas = state.rows.length || 1;
+    tbody.innerHTML = filas.slice(0, 500).map((c) => {
+      const unicos = c.truncated ? '> 1.000' : fmtInt.format(c.distinct.size);
+      // Control de calidad: se resalta la variable que practicamente no tiene datos en el archivo
+      const pctVacios = c.empty / nFilas;
+      const pobre = pctVacios >= 0.90;
+      return '<tr><td>' + (c.index + 1) + '</td><td>' + escapeHtml(c.name) + '</td>' +
+        '<td>' + (c.numeric ? 'Numérica' : 'Categórica') + '</td>' +
+        '<td class="num' + (pobre ? ' pobre' : '') + '">' + fmtInt.format(c.empty) + ' (' + fmtPct(pctVacios) + ')' +
+        (pobre ? '<span class="tag-alerta">sin datos</span>' : '') + '</td>' +
+        '<td class="num">' + unicos + '</td>' +
+        '<td class="num">' + fmt(c.min) + '</td>' +
+        '<td class="num">' + fmt(c.max) + '</td>' +
+        '<td class="num">' + fmt(c.mean) + '</td></tr>';
+    }).join('') || '<tr><td colspan="8">Sin resultados.</td></tr>';
+  }
+
+  $('colSearch').addEventListener('input', debounce(renderColsTable, 180));
+
+  function renderExploreSelectors() {
+    const sel = $('exploreCol');
+    sel.innerHTML = state.colInfo.map((c) => '<option value="' + c.index + '">' + escapeHtml(c.name) + '</option>').join('');
+    sel.value = String(state.mapping.estado >= 0 ? state.mapping.estado : 0);
+    renderExplore(parseInt(sel.value, 10));
+    sel.onchange = () => renderExplore(parseInt(sel.value, 10));
+  }
+
+  /** Explorador de una variable: top de valores (categorica) o histograma (numerica) */
+  function renderExplore(colIdx) {
+    const info = state.colInfo[colIdx];
+    if (!info) return;
+    const tbody = $('valuesTable').querySelector('tbody');
+    const labels = [], values = [];
+
+    if (info.numeric) {
+      // Histograma de 12 intervalos entre min y max
+      const min = info.min || 0, max = info.max || 0;
+      const bins = 12, ancho = (max - min) / bins || 1;
+      const counts = new Array(bins).fill(0);
+      state.rows.forEach((r) => {
+        const v = r[colIdx];
+        if (typeof v !== 'number') return;
+        let b = Math.floor((v - min) / ancho);
+        if (b >= bins) b = bins - 1; if (b < 0) b = 0;
+        counts[b]++;
+      });
+      counts.forEach((c, i) => {
+        const a = min + i * ancho, b2 = min + (i + 1) * ancho;
+        labels.push(fmtCompact(a) + ' - ' + fmtCompact(b2));
+        values.push(c);
+      });
+      const totalN = info.n || 1;
+      tbody.innerHTML = labels.map((l, i) =>
+        '<tr><td>' + l + '</td><td class="num">' + fmtInt.format(values[i]) + '</td><td class="num">' + fmtPct(values[i] / totalN) + '</td></tr>').join('');
+      $('exploreChartTitle').textContent = 'Histograma: ' + info.name;
+    } else {
+      const counts = info.counts || new Map();
+      const arr = Array.from(counts.entries()).sort((a, b) => b[1] - a[1]).slice(0, 20);
+      const totalN = state.rows.length || 1;
+      tbody.innerHTML = arr.map(([k, v]) =>
+        '<tr><td>' + escapeHtml(k === '' ? '(vacío)' : k) + '</td><td class="num">' + fmtInt.format(v) + '</td><td class="num">' + fmtPct(v / totalN) + '</td></tr>').join('') ||
+        '<tr><td colspan="3">Sin datos.</td></tr>';
+      arr.forEach(([k, v]) => { labels.push(k === '' ? '(vacío)' : k); values.push(v); });
+      $('exploreChartTitle').textContent = 'Top valores: ' + info.name;
+    }
+
+    dibujar('exploreChart', {
+      type: 'bar',
+      data: { labels: labels, datasets: [{ label: 'Frecuencia', data: values, backgroundColor: PALETA[0], borderRadius: 5 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, indexAxis: info.numeric ? 'x' : 'y',
+        plugins: { legend: { display: false } },
+        scales: { x: { ticks: { color: '#6B6B6B', font: { size: 10 } }, grid: { color: '#F1E7DA' } }, y: { ticks: { color: '#6B6B6B', font: { size: 10 } }, grid: { color: '#F1E7DA' } } }
+      }
+    });
+  }
+
+  /** Limpia los resultados del modelo (al cargar un archivo nuevo) */
+  function resetModelUI() {
+    $('metricsBox').innerHTML = '';
+    $('equationBox').style.display = 'none';
+    $('equationBox').innerHTML = '';
+    $('coefWrap').style.display = 'none';
+    $('coefTable').querySelector('tbody').innerHTML = '';
+    $('predictInputs').innerHTML = '';
+    $('predBox').classList.remove('on');
+    $('btnPredict').disabled = true;
+    $('modelMsg').innerHTML = '<div class="alert alert-info">Seleccione Y y al menos una X, luego presione <b>Construir Modelo</b>.</div>';
+  }
+
+  function renderPreview() {
+    const nCols = Math.min(state.headers.length, 40);
+    const thead = $('previewTable').querySelector('thead');
+    const tbody = $('previewTable').querySelector('tbody');
+    thead.innerHTML = '<tr>' + state.headers.slice(0, nCols).map((h) => '<th>' + escapeHtml(h) + '</th>').join('') + '</tr>';
+    tbody.innerHTML = state.rows.slice(0, 50).map((r) =>
+      '<tr>' + r.slice(0, nCols).map((v) => '<td>' + escapeHtml(v === null ? '' : (typeof v === 'number' ? fmt(v) : v)) + '</td>').join('') + '</tr>').join('');
+  }
+
+  /* ============================================================
+     4. MAPEO AUTOMATICO DE COLUMNAS CLAVE
+     ------------------------------------------------------------
+     Cada rol tiene una lista de palabras clave ordenadas por prioridad.
+     Primero se busca coincidencia EXACTA con el nombre normalizado y,
+     si no hay, coincidencia parcial (substring). Asi, en archivos como
+     "Base_modificada" se eligen "39.Destino" y no "93.Descripcion Destino".
+     ============================================================ */
+  const MAP_DEFS = [
+    { key: 'regional',  label: 'Regional',      keys: ['regional', 'agencia'] },
+    { key: 'rubro',     label: 'Rubro',         keys: ['rubro'] },
+    { key: 'destino',   label: 'Destino',       keys: ['destino', 'descripcion destino'] },
+    { key: 'caedec',    label: 'CAEDEC',        keys: ['caedec prestamo', 'caedec cliente', 'caedec'] },
+    { key: 'categoria', label: 'Categoría de Calificación', keys: ['categoria de calificacion', 'categ calif proceso automatico', 'calificacion'] },
+    { key: 'dias',      label: 'Días de Atraso', keys: ['dias de atraso acumulado', 'dias de atraso', 'dias de incumplimiento'] },
+    { key: 'estado',    label: 'Estado',        keys: ['estado de cartera', 'estado'] },
+    { key: 'monto',     label: 'Monto / Saldo', keys: ['saldo en bolivianos', 'saldo en dolares', 'saldo en su moneda', 'monto desembolsado en bolivianos', 'saldo'] },
+    { key: 'mora',      label: 'Previsión / Mora', keys: ['prevision en bolivianos', 'prevision en dolares', 'prevision especifica en bolivianos', 'prevision', 'mora'] }
+  ];
+
+  // Roles que SIEMPRE se tratan como dimensiones categoricas: nunca se convierten a numero
+  // porque representan etiquetas ("20 LA PAZ", "2 VIGENTE CORTO PLAZO", "009 PRODUCCION...").
+  const ROLES_DIMENSION = ['regional', 'rubro', 'destino', 'caedec', 'categoria', 'estado'];
+
+  /** Busca la columna que corresponde a un rol. Primero exige coincidencia EXACTA con el
+   *  nombre normalizado y luego coincidencia parcial, respetando el orden de las palabras clave. */
+  function findColumn(keys, onlyNumeric, meta) {
+    const fuente = meta || state.colInfo;
+    const candidatos = fuente.filter((c) => !onlyNumeric || c.numeric);
+    for (const k of keys) {
+      const exact = candidatos.find((c) => normName(c.name) === k);
+      if (exact) return exact.index;
+    }
+    for (const k of keys) {
+      const parcial = candidatos.find((c) => normName(c.name).indexOf(k) >= 0);
+      if (parcial) return parcial.index;
+    }
+    return -1;
+  }
+
+  /** Calcula el mapeo rol -> indice de columna a partir de los metadatos del archivo */
+  function computeMapping(meta, numericCols) {
+    const map = {};
+    MAP_DEFS.forEach((def) => {
+      const soloNumerica = def.key === 'monto' || def.key === 'mora';
+      map[def.key] = findColumn(def.keys, soloNumerica, meta);
+    });
+    // Metrica monetaria por defecto si ninguna columna coincidio con las palabras clave
+    if (map.monto < 0 && numericCols.length) map.monto = numericCols[0];
+    return map;
+  }
+
+  /** Barra de "mapeo": permite al usuario corregir las columnas detectadas */
+  function buildMappingBar() {
+    const html = MAP_DEFS.map((def) => {
+      const opciones = state.colInfo.map((c) =>
+        '<option value="' + c.index + '"' + (state.mapping[def.key] === c.index ? ' selected' : '') + '>' + escapeHtml(c.name) + '</option>').join('');
+      return '<div><label class="fld">' + escapeHtml(def.label) + '</label>' +
+        '<select data-map="' + def.key + '"><option value="-1">(ninguna)</option>' + opciones + '</select></div>';
+    }).join('');
+    $('mapBar').innerHTML = html;
+    $('mapBar').querySelectorAll('select').forEach((sel) => {
+      sel.addEventListener('change', () => {
+        const key = sel.getAttribute('data-map');
+        const val = parseInt(sel.value, 10);
+        state.mapping[key] = val;
+        if (key === 'estado' || key === 'categoria') { state.pieDim = val; buildPieDimSelect(); }
+        state.filters[key] = null;             // el filtro cambia de columna: se reinicia
+        buildFilterBar();
+        refreshDashboard();
+      });
+    });
+  }
+
+  /* ============================================================
+     5. DASHBOARD
+     ------------------------------------------------------------
+     FILTRADO: cada filtro es un Set de valores normalizados (o null = todos).
+     Una fila pasa el filtro si su valor (normalizado) esta en el Set del rol
+     correspondiente. Los filtros se combinan con AND (interseccion logica),
+     que es el comportamiento habitual de un tablero de cartera.
+     El filtro de "Dias de Atraso" es numerico y trabaja por rangos (buckets).
+     ============================================================ */
+
+  // Rangos de dias de atraso para el filtro y las visualizaciones
+  const DIAS_BUCKETS = [
+    { label: 'Sin dato', test: (v) => v === null },
+    { label: 'Sin atraso (0)', test: (v) => v !== null && v <= 0 },
+    { label: '1 - 30', test: (v) => v > 0 && v <= 30 },
+    { label: '31 - 60', test: (v) => v > 30 && v <= 60 },
+    { label: '61 - 90', test: (v) => v > 60 && v <= 90 },
+    { label: '91 - 180', test: (v) => v > 90 && v <= 180 },
+    { label: '181 - 360', test: (v) => v > 180 && v <= 360 },
+    { label: 'Más de 360', test: (v) => v > 360 }
+  ];
+  function bucketOf(v) { for (const b of DIAS_BUCKETS) if (b.test(v)) return b.label; return 'Sin dato'; }
+
+  /** Devuelve las filas que cumplen TODOS los filtros activos */
+  function getFilteredRows() {
+    const m = state.mapping;
+    const activos = [];
+    MAP_DEFS.forEach((def) => {
+      const set = state.filters[def.key];
+      if (set && set.size) activos.push({ key: def.key, col: m[def.key], set: set });
+    });
+    if (!activos.length) { state.filteredIndex = state.rows; return state.rows; }
+
+    const out = [];
+    for (let i = 0; i < state.rows.length; i++) {
+      const row = state.rows[i];
+      let ok = true;
+      for (let a = 0; a < activos.length; a++) {
+        const f = activos[a];
+        if (f.col < 0) continue;
+        if (f.key === 'dias') {
+          // El filtro de atraso trabaja por rangos (buckets) y no por valor exacto
+          const v = numOrNull(row[f.col]);
+          if (!f.set.has(norm(bucketOf(v)))) { ok = false; break; }
+        } else {
+          if (!f.set.has(norm(row[f.col]))) { ok = false; break; }
+        }
+      }
+      if (ok) out.push(row);
+    }
+    state.filteredIndex = out;
+    return out;
+  }
+
+  /** Barra de filtros: un dropdown con checkboxes por cada dimension */
+  function buildFilterBar() {
+    const bar = $('filtersBar');
+    bar.innerHTML = '';
+    MAP_DEFS.forEach((def) => {
+      if (def.key === 'monto' || def.key === 'mora' || def.key === 'estado') return; // no se filtran
+      const col = state.mapping[def.key];
+
+      // Valores disponibles: para "dias" son los rangos; para el resto, los valores distintos
+      let valores;
+      if (def.key === 'dias') {
+        valores = DIAS_BUCKETS.map((b) => ({ value: b.label, label: b.label }));
+        // Marcar cuantos registros hay en cada rango
+        const conteo = new Map();
+        state.rows.forEach((r) => { const l = col >= 0 ? bucketOf(numOrNull(r[col])) : 'Sin dato'; conteo.set(l, (conteo.get(l) || 0) + 1); });
+        valores.forEach((v) => { v.label = v.value + '  (' + fmtInt.format(conteo.get(v.value) || 0) + ')'; });
+        valores.sort((a, b) => DIAS_BUCKETS.findIndex((x) => x.label === a.value) - DIAS_BUCKETS.findIndex((x) => x.label === b.value));
+      } else if (col < 0) {
+        valores = [];
+      } else {
+        const info = state.colInfo[col];
+        const arr = info && info.counts ? Array.from(info.counts.entries()) : [];
+        valores = arr.sort((a, b) => b[1] - a[1]).map(([k, v]) => ({ value: k, label: (k === '' ? '(vacío)' : k) + '  (' + fmtInt.format(v) + ')' }));
+      }
+
+      const wrap = document.createElement('div');
+      wrap.className = 'ms';
+      wrap.innerHTML =
+        '<button type="button" class="ms-btn"><span data-lbl>' + def.label + ': Todos</span><span>&#9662;</span></button>' +
+        '<div class="ms-panel">' +
+          '<input type="text" class="ms-search" placeholder="Buscar..." />' +
+          '<div class="ms-actions"><button type="button" data-all>Todos</button><button type="button" data-none>Ninguno</button></div>' +
+          '<div class="ms-list"></div>' +
+        '</div>';
+      const btn = wrap.querySelector('.ms-btn');
+      const panel = wrap.querySelector('.ms-panel');
+      const list = wrap.querySelector('.ms-list');
+      const search = wrap.querySelector('.ms-search');
+      const lbl = wrap.querySelector('[data-lbl]');
+
+      if (col < 0 && def.key !== 'dias') {
+        list.innerHTML = '<div class="ms-empty">Columna no encontrada en el archivo. Ajústela en la configuración avanzada.</div>';
+      } else {
+        list.innerHTML = valores.slice(0, 800).map((v) =>
+          '<label><input type="checkbox" value="' + escapeHtml(v.value) + '" /> ' + escapeHtml(v.label) + '</label>').join('');
+      }
+
+      const checkboxes = () => Array.from(list.querySelectorAll('input[type=checkbox]'));
+
+      function aplicar() {
+        const marcados = checkboxes().filter((c) => c.checked).map((c) => norm(c.value));
+        const total = checkboxes().length;
+        const set = marcados.length === 0 || marcados.length === total ? null : new Set(marcados);
+        state.filters[def.key] = set;
+        if (!set) { lbl.textContent = def.label + ': Todos'; btn.classList.remove('active'); }
+        else { lbl.textContent = def.label + ': ' + set.size + ' selec.'; btn.classList.add('active'); }
+        refreshDashboard();
+      }
+
+      list.addEventListener('change', aplicar);
+      btn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        const abierto = panel.classList.contains('open');
+        document.querySelectorAll('.ms-panel.open').forEach((p) => p.classList.remove('open'));
+        panel.classList.toggle('open', !abierto);
+        if (!abierto) search.focus();
+      });
+      panel.addEventListener('click', (e) => e.stopPropagation());
+      wrap.querySelector('[data-all]').addEventListener('click', () => { checkboxes().forEach((c) => { if (c.closest('label').style.display !== 'none') c.checked = true; }); aplicar(); });
+      wrap.querySelector('[data-none]').addEventListener('click', () => { checkboxes().forEach((c) => (c.checked = false)); aplicar(); });
+      search.addEventListener('input', () => {
+        const q = normName(search.value);
+        checkboxes().forEach((c) => { c.closest('label').style.display = !q || normName(c.value).indexOf(q) >= 0 ? '' : 'none'; });
+      });
+
+      bar.appendChild(wrap);
+    });
+  }
+  document.addEventListener('click', () => document.querySelectorAll('.ms-panel.open').forEach((p) => p.classList.remove('open')));
+
+  $('btnClearFilters').addEventListener('click', () => {
+    MAP_DEFS.forEach((d) => { state.filters[d.key] = null; });
+    buildFilterBar();
+    refreshDashboard();
+  });
+
+  $('metricSel').addEventListener('change', () => { state.metric = $('metricSel').value; refreshDashboard(); });
+
+  function buildPieDimSelect() {
+    // Candidatas: las dimensiones detectadas automaticamente + cualquier columna categorica
+    // de baja cardinalidad (un grafico circular no es legible con cientos de categorias).
+    const preferidas = [state.pieDim, state.mapping.estado, state.mapping.categoria, state.mapping.rubro, state.mapping.destino, state.mapping.caedec, state.mapping.regional];
+    const indices = new Set();
+    preferidas.forEach((i) => { if (i >= 0 && state.colInfo[i]) indices.add(i); });
+    state.colInfo.forEach((c) => { if (!c.numeric && c.distinct.size > 1 && c.distinct.size <= 60) indices.add(c.index); });
+    const opciones = Array.from(indices).sort((a, b) => a - b).map((i) => state.colInfo[i]);
+    const sel = $('pieDimSel');
+    const def = state.pieDim;
+    sel.innerHTML = opciones.map((c) => '<option value="' + c.index + '"' + (c.index === def ? ' selected' : '') + '>' + escapeHtml(c.name) + '</option>').join('');
+    if (!opciones.some((c) => c.index === def) && opciones.length) { sel.value = String(opciones[0].index); state.pieDim = opciones[0].index; }
+    sel.onchange = () => { state.pieDim = parseInt(sel.value, 10); refreshDashboard(); };
+  }
+
+  /** Agrupa filas por el valor de una columna y acumula recuento y monto */
+  function aggregate(rows, keyCol, valueCol) {
+    const map = new Map();
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      const k = keyCol < 0 ? '(sin dato)' : (norm(r[keyCol]) === '' ? '(vacío)' : String(r[keyCol]).trim());
+      let o = map.get(k);
+      if (!o) { o = { key: k, count: 0, sum: 0 }; map.set(k, o); }
+      o.count++;
+      if (valueCol >= 0) o.sum += num(r[valueCol]);
+    }
+    return Array.from(map.values()).sort((a, b) => (state.metric === 'monto' ? b.sum - a.sum : b.count - a.count));
+  }
+
+  const refreshDashboard = debounce(function () {
+    if (!state.rows.length) return;
+    const rows = getFilteredRows();
+    $('filteredInfo').textContent = 'Mostrando ' + fmtInt.format(rows.length) + ' de ' + fmtInt.format(state.rows.length) +
+      ' registros (' + fmtPct(state.rows.length ? rows.length / state.rows.length : 0) + ' de la cartera). Métrica: ' +
+      (state.metric === 'monto' ? 'monto acumulado' : 'recuento de operaciones') + '.';
+    renderDashKpis(rows);
+    renderPie(rows);
+    renderBar(rows);
+    renderRegionalTable(rows);
+  }, 140);
+
+  function renderDashKpis(rows) {
+    const montoCol = state.mapping.monto, moraCol = state.mapping.mora, diasCol = state.mapping.dias, regCol = state.mapping.regional;
+    let monto = 0, mora = 0, diasSum = 0, diasN = 0, conAtraso = 0;
+    const regs = new Set();
+    rows.forEach((r) => {
+      monto += num(r[montoCol]);
+      mora += num(r[moraCol]);
+      const d = numOrNull(r[diasCol]);
+      if (d !== null) { diasSum += d; diasN++; if (d > 0) conAtraso++; }
+      if (regCol >= 0) regs.add(norm(r[regCol]));
+    });
+    const kpis = [
+      ['Operaciones', fmtInt.format(rows.length), 'registros filtrados'],
+      ['Monto cartera', fmtCompact(monto), 'saldo acumulado'],
+      ['Previsión / mora', fmtCompact(mora), moraCol >= 0 ? state.headers[moraCol] : 'columna no detectada'],
+      ['Atraso promedio', diasN ? fmtNum.format(diasSum / diasN) + ' d' : '-', diasN ? fmtPct(conAtraso / diasN) + ' con atraso' : 'sin datos'],
+      ['Regionales', regCol >= 0 ? fmtInt.format(regs.size) : '-', regCol >= 0 ? 'segmentos presentes' : 'sin columna']
+    ];
+    $('dashKpis').innerHTML = kpis.map((k) =>
+      '<div class="kpi"><div class="k-label">' + k[0] + '</div><div class="k-value">' + k[1] + '</div><div class="k-sub">' + escapeHtml(k[2]) + '</div></div>').join('');
+  }
+
+  /** Helper para crear/reemplazar graficos Chart.js */
+  function dibujar(canvasId, cfg) {
+    if (state.charts[canvasId]) state.charts[canvasId].destroy();
+    const ctx = $(canvasId).getContext('2d');
+    state.charts[canvasId] = new Chart(ctx, cfg);
+    return state.charts[canvasId];
+  }
+
+  const fmtValor = (v) => state.metric === 'monto' ? fmtNum.format(v) : fmtInt.format(v);
+
+  /** Grafico circular: participacion % de cada categoria (agrupando la cola en "Otros") */
+  function renderPie(rows) {
+    const dim = state.pieDim;
+    const col = dim >= 0 ? dim : (state.mapping.estado >= 0 ? state.mapping.estado : state.mapping.categoria);
+    const nombreDim = col >= 0 ? state.headers[col] : 'Sin dimension';
+    $('pieCardTitle').textContent = 'Distribución % por: ' + nombreDim;
+
+    const agg = aggregate(rows, col, state.mapping.monto);
+    const total = agg.reduce((s, o) => s + (state.metric === 'monto' ? o.sum : o.count), 0) || 1;
+    const top = agg.slice(0, 9);
+    const resto = agg.slice(9);
+    if (resto.length) {
+      top.push({ key: 'Otros (' + resto.length + ')', count: resto.reduce((s, o) => s + o.count, 0), sum: resto.reduce((s, o) => s + o.sum, 0) });
+    }
+    const valores = top.map((o) => state.metric === 'monto' ? Math.round(o.sum * 100) / 100 : o.count);
+    const labels = top.map((o) => {
+      const p = (state.metric === 'monto' ? o.sum : o.count) / total;
+      return o.key + ' (' + (p * 100).toFixed(1) + '%)';
+    });
+
+    dibujar('pieChart', {
+      type: 'doughnut',
+      data: { labels: labels, datasets: [{ data: valores, backgroundColor: top.map((_, i) => PALETA[i % PALETA.length]), borderColor: '#fff', borderWidth: 2 }] },
+      options: {
+        responsive: true, maintainAspectRatio: false, cutout: '45%',
+        plugins: {
+          legend: { position: 'right', labels: { boxWidth: 12, font: { size: 11 }, color: '#2C2C2C' } },
+          tooltip: {
+            callbacks: {
+              label: (c) => {
+                const o = top[c.dataIndex];
+                const val = state.metric === 'monto' ? o.sum : o.count;
+                return [fmtValor(val) + (state.metric === 'monto' ? '' : ' operaciones'),
+                  ((val / total) * 100).toFixed(2) + '% del total',
+                  'Ops: ' + fmtInt.format(o.count)];
+              }
+            }
+          }
+        }
+      }
+    });
+
+    $('pieList').innerHTML = top.map((o, i) => {
+      const val = state.metric === 'monto' ? o.sum : o.count;
+      return '<li><span><span class="swatch" style="background:' + PALETA[i % PALETA.length] + '"></span>' + escapeHtml(o.key) + '</span>' +
+        '<span><b>' + fmtValor(val) + '</b> · ' + ((val / total) * 100).toFixed(2) + '%</span></li>';
+    }).join('');
+  }
+
+  /** Grafico de barras: clasificacion por Rubro (o por la dimension elegida) */
+  function renderBar(rows) {
+    let col = state.mapping.rubro;
+    // Si no existe la columna Rubro, se usa la mejor alternativa disponible
+    if (col < 0) col = state.mapping.destino >= 0 ? state.mapping.destino : state.mapping.categoria;
+    const nombre = col >= 0 ? state.headers[col] : 'Sin dimension';
+    $('barCardTitle').textContent = 'Clasificación por: ' + nombre;
+
+    const agg = aggregate(rows, col, state.mapping.monto);
+    const top = agg.slice(0, 15);
+    const resto = agg.slice(15);
+    if (resto.length) top.push({ key: 'Otros (' + resto.length + ')', count: resto.reduce((s, o) => s + o.count, 0), sum: resto.reduce((s, o) => s + o.sum, 0) });
+
+    dibujar('barChart', {
+      type: 'bar',
+      data: {
+        labels: top.map((o) => (o.key.length > 42 ? o.key.slice(0, 42) + '…' : o.key)),
+        datasets: [{
+          label: state.metric === 'monto' ? 'Monto acumulado' : 'Nº de operaciones',
+          data: top.map((o) => state.metric === 'monto' ? Math.round(o.sum * 100) / 100 : o.count),
+          backgroundColor: PALETA[1], borderRadius: 6
+        }]
+      },
+      options: {
+        responsive: true, maintainAspectRatio: false, indexAxis: 'y',
+        plugins: {
+          legend: { display: false },
+          tooltip: { callbacks: { label: (c) => fmtValor(c.parsed.x) } }
+        },
+        scales: {
+          x: { ticks: { callback: (v) => fmtCompact(v), color: '#6B6B6B', font: { size: 10 } }, grid: { color: '#F1E7DA' } },
+          y: { ticks: { color: '#2C2C2C', font: { size: 10 } }, grid: { display: false } }
+        }
+      }
+    });
+  }
+
+  /** Tabla resumen por Regional */
+  function renderRegionalTable(rows) {
+    const regCol = state.mapping.regional;
+    const montoCol = state.mapping.monto, moraCol = state.mapping.mora, diasCol = state.mapping.dias;
+    const map = new Map();
+    rows.forEach((r) => {
+      const k = regCol < 0 ? '(sin dato)' : (norm(r[regCol]) === '' ? '(vacío)' : String(r[regCol]).trim());
+      let o = map.get(k);
+      if (!o) { o = { key: k, count: 0, monto: 0, mora: 0, dias: 0, diasN: 0 }; map.set(k, o); }
+      o.count++; o.monto += num(r[montoCol]); o.mora += num(r[moraCol]);
+      const d = numOrNull(r[diasCol]); if (d !== null) { o.dias += d; o.diasN++; }
+    });
+    const arr = Array.from(map.values()).sort((a, b) => b.monto - a.monto);
+    const totCount = arr.reduce((s, o) => s + o.count, 0) || 1;
+    const totMonto = arr.reduce((s, o) => s + o.monto, 0) || 1;
+    $('regionalTable').querySelector('tbody').innerHTML = arr.map((o) =>
+      '<tr><td>' + escapeHtml(o.key) + '</td>' +
+      '<td class="num">' + fmtInt.format(o.count) + '</td>' +
+      '<td class="num">' + fmtPct(o.count / totCount) + '</td>' +
+      '<td class="num">' + fmt(o.monto) + '</td>' +
+      '<td class="num">' + fmtPct(o.monto / totMonto) + '</td>' +
+      '<td class="num">' + fmt(o.mora) + '</td>' +
+      '<td class="num">' + (o.diasN ? fmtNum.format(o.dias / o.diasN) : '-') + '</td></tr>').join('') ||
+      '<tr><td colspan="7">Sin registros con los filtros aplicados.</td></tr>';
+  }
+
+  /* ============================================================
+     6. MODELO PREDICTIVO (REGRESION LINEAL)
+     ------------------------------------------------------------
+     x: matriz de variables independientes (n x k)
+     y: vector de la variable dependiente (n)
+
+     El modelo estimado es  y = b0 + b1*x1 + ... + bk*xk
+     y se calcula por MINIMOS CUADRADOS ORDINARIOS (OLS) resolviendo
+     las ecuaciones normales mediante Gauss-Jordan con pivoteo parcial:
+
+         (X'X) b = X'y      =>      b = (X'X)^-1 X'y
+
+     Al invertir (X'X) tambien se obtienen los errores estandar de cada
+     coeficiente:  SE(bj) = sqrt( sigma^2 * [(X'X)^-1]_jj ), con
+     sigma^2 = SSE / (n - k - 1). Con eso se calcula el estadistico t.
+
+     Librerias solicitadas: simple-statistics (1 variable X) y
+     ml-regression-multivariate-linear (varias X). Si el CDN no responde
+     se usa el solver interno, obteniendo el mismo resultado.
+     ============================================================ */
+
+  /* ---------- Algebra lineal basica ---------- */
+  function dot(a, b) { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; }
+
+  /** Resuelve A*x = B por Gauss-Jordan con pivoteo parcial.
+   *  Devuelve {x: solucion, inv: inversa de A} o null si A es singular. */
+  function gaussJordan(A, B) {
+    const k = A.length;
+    // Matriz aumentada [A | B] y matriz identidad para la inversa
+    const M = A.map((row, i) => row.concat([B[i]]));
+    const I = A.map((row, i) => row.map((_, j) => (i === j ? 1 : 0)));
+
+    for (let col = 0; col < k; col++) {
+      let piv = col;
+      for (let r = col + 1; r < k; r++) if (Math.abs(M[r][col]) > Math.abs(M[piv][col])) piv = r;
+      if (Math.abs(M[piv][col]) < 1e-12) return null;      // matriz singular (multicolinealidad perfecta)
+      if (piv !== col) { const t = M[piv]; M[piv] = M[col]; M[col] = t; const t2 = I[piv]; I[piv] = I[col]; I[col] = t2; }
+      const p = M[col][col];
+      for (let j = 0; j <= k; j++) M[col][j] /= p;
+      for (let j = 0; j < k; j++) I[col][j] /= p;
+      for (let r = 0; r < k; r++) {
+        if (r === col) continue;
+        const f = M[r][col];
+        if (f === 0) continue;
+        for (let j = 0; j <= k; j++) M[r][j] -= f * M[col][j];
+        for (let j = 0; j < k; j++) I[r][j] -= f * I[col][j];
+      }
+    }
+    return { x: M.map((r) => r[k]), inv: I };
+  }
+
+  /** Prepara la muestra: filas donde Y y todas las X son numeros validos */
+  /** Diferencia relativa maxima entre dos vectores de coeficientes (para comparar motores) */
+  function maxDifRelativa(a, b) {
+    let max = 0;
+    for (let i = 0; i < Math.min(a.length, b.length); i++) {
+      const d = Math.abs(a[i] - b[i]) / Math.max(1, Math.abs(b[i]));
+      if (d > max) max = d;
+    }
+    return max;
+  }
+
+  function buildSample(yCol, xCols, sampleN) {
+    const validos = [];
+    for (let i = 0; i < state.rows.length; i++) {
+      const r = state.rows[i];
+      const y = numOrNull(r[yCol]);
+      if (y === null) continue;
+      let ok = true;
+      for (let j = 0; j < xCols.length; j++) if (numOrNull(r[xCols[j]]) === null) { ok = false; break; }
+      if (ok) validos.push(i);
+    }
+    // Submuestreo uniforme si hay mas registros que el tamano de muestra pedido
+    let idx = validos;
+    if (sampleN > 0 && validos.length > sampleN) {
+      const stride = validos.length / sampleN;
+      idx = [];
+      for (let i = 0; i < sampleN; i++) idx.push(validos[Math.floor(i * stride)]);
+    }
+    const X = [], y = [];
+    idx.forEach((i) => {
+      const r = state.rows[i];
+      X.push(xCols.map((c) => num(r[c])));
+      y.push(num(r[yCol]));
+    });
+    return { X: X, y: y, n: idx.length, totalValidos: validos.length };
+  }
+
+  /** OLS por ecuaciones normales: coeficientes, errores estandar, R2, MSE, etc. */
+  function ols(X, y, xCols) {
+    const n = X.length, k = (xCols ? xCols.length : (X[0] ? X[0].length : 0));
+    if (k === 0) throw new Error('Debe seleccionar al menos una variable independiente (X).');
+    if (n <= k + 1) throw new Error('No hay suficientes registros válidos (' + n + ') para estimar ' + k + ' variable(s) más el intercepto.');
+
+    // Matriz de diseno con columna de 1s para el intercepto (termino constante)
+    const p = k + 1;
+    const XtX = Array.from({ length: p }, () => new Array(p).fill(0));
+    const Xty = new Array(p).fill(0);
+    for (let i = 0; i < n; i++) {
+      const row = X[i];
+      for (let a = 0; a < p; a++) {
+        const va = a === 0 ? 1 : row[a - 1];
+        Xty[a] += va * y[i];
+        for (let b = a; b < p; b++) {
+          const vb = b === 0 ? 1 : row[b - 1];
+          XtX[a][b] += va * vb;
+        }
+      }
+    }
+    for (let a = 0; a < p; a++) for (let b = a + 1; b < p; b++) XtX[b][a] = XtX[a][b]; // matriz simetrica
+
+    const sol = gaussJordan(XtX.map((r) => r.slice()), Xty.slice());
+    if (!sol) throw new Error('El sistema es singular: las variables X seleccionadas son colineales (una es combinación lineal de otra). Pruebe quitando variables.');
+
+    const beta = sol.x, inv = sol.inv;
+
+    // Predicciones, residuos y medidas de bondad de ajuste
+    let sse = 0, sae = 0, yMean = 0;
+    for (let i = 0; i < n; i++) yMean += y[i];
+    yMean /= n;
+    let sst = 0, pred = new Array(n);
+    for (let i = 0; i < n; i++) {
+      let yh = beta[0];
+      for (let j = 0; j < k; j++) yh += beta[j + 1] * X[i][j];
+      pred[i] = yh;
+      const e = y[i] - yh;
+      sse += e * e; sae += Math.abs(e);
+      sst += (y[i] - yMean) * (y[i] - yMean);
+    }
+    const mse = sse / n;                       // Error Cuadratico Medio = promedio de residuos^2
+    const sigma2 = sse / (n - p);              // varianza residual insesgada
+    const r2 = sst === 0 ? 0 : 1 - sse / sst;
+    const r2adj = 1 - (1 - r2) * (n - 1) / (n - p);
+
+    const se = new Array(p);
+    for (let j = 0; j < p; j++) se[j] = Math.sqrt(Math.max(0, sigma2 * inv[j][j]));
+
+    return {
+      n: n, k: k, beta: beta, se: se, inv: inv, sigma2: sigma2,
+      r2: r2, r2adj: r2adj, mse: mse, rmse: Math.sqrt(mse), mae: sae / n,
+      sse: sse, sst: sst, pred: pred
+    };
+  }
+
+  function buildModelSelectors() {
+    const ySel = $('varY');
+    ySel.innerHTML = state.colInfo.map((c) =>
+      '<option value="' + c.index + '"' + (c.index === state.mapping.mora || c.index === state.mapping.monto ? ' selected' : '') + '>' + escapeHtml(c.name) + '</option>').join('');
+    const def = state.mapping.mora >= 0 ? state.mapping.mora : state.mapping.monto;
+    if (def >= 0) ySel.value = String(def);
+
+    const lista = $('varXList');
+    lista.innerHTML = state.numericCols.map((i) =>
+      '<label data-name="' + escapeHtml(normName(state.headers[i])) + '"><input type="checkbox" value="' + i + '" /> ' + escapeHtml(state.headers[i]) + ' <span style="color:#999">(' + (state.colInfo[i].n ? fmtInt.format(state.colInfo[i].n) : 0) + ')</span></label>').join('');
+    $('xSearch').oninput = () => {
+      const q = normName($('xSearch').value);
+      lista.querySelectorAll('label').forEach((l) => { l.style.display = !q || l.getAttribute('data-name').indexOf(q) >= 0 ? '' : 'none'; });
+    };
+  }
+
+  $('btnModel').addEventListener('click', construirModelo);
+
+  function construirModelo() {
+    const yCol = parseInt($('varY').value, 10);
+    const xCols = Array.from($('varXList').querySelectorAll('input[type=checkbox]:checked')).map((c) => parseInt(c.value, 10));
+    const msg = $('modelMsg');
+
+    if (!state.rows.length) { msg.innerHTML = '<div class="alert alert-err">Primero cargue un archivo de datos.</div>'; return; }
+    if (!xCols.length) { msg.innerHTML = '<div class="alert alert-err">Seleccione al menos una variable independiente (X).</div>'; return; }
+    if (xCols.indexOf(yCol) >= 0) { msg.innerHTML = '<div class="alert alert-err">La variable Y no puede ser también variable X.</div>'; return; }
+
+    msg.innerHTML = '<div class="alert alert-info">Estimando el modelo...</div>';
+    // Se deja que el navegador repinte antes del calculo
+    setTimeout(() => {
+      try {
+        const sampleN = parseInt($('sampleSize').value, 10) || 0;
+        const sample = buildSample(yCol, xCols, sampleN);
+        if (sample.n < xCols.length + 2) throw new Error('Muy pocos registros válidos (' + sample.n + '). Revise que las variables contengan valores numéricos.');
+
+        // --- Calculo de coeficientes ---
+        // Referencia siempre disponible: solver OLS interno (ecuaciones normales).
+        // 1 variable X  -> se contrasta con simple-statistics (ss.linearRegression)
+        // 2 o mas X     -> se contrasta con ml-regression-multivariate-linear
+        // Los coeficientes de la libreria solo se adoptan si coinciden con el OLS; asi se
+        // garantiza el resultado correcto aunque la libreria cambie de convencion.
+        const base = ols(sample.X, sample.y, xCols);   // coeficientes, errores estandar, R2, MSE
+        let beta = base.beta;
+        let motor = 'solver OLS interno (ecuaciones normales)';
+        let candidato = null;
+
+        if (xCols.length === 1 && typeof window.ss !== 'undefined' && typeof window.ss.linearRegression === 'function') {
+          // Regresion simple: y = m*x + b calculada por simple-statistics
+          const pares = sample.X.map((x, i) => [x[0], sample.y[i]]);
+          const lr = window.ss.linearRegression(pares);
+          if (isFinite(lr.m) && isFinite(lr.b)) candidato = { beta: [lr.b, lr.m], nombre: 'simple-statistics (ss.linearRegression)' };
+        } else if (xCols.length > 1 && typeof window.MLR === 'function') {
+          // Regresion multiple: ml-regression-multivariate-linear
+          const mlr = new window.MLR(sample.X, sample.y.map((v) => [v]), { intercept: true, statistics: false });
+          const w = mlr.weights.map((r) => (Array.isArray(r) ? r[0] : r));
+          // La libreria agrega la columna de 1s AL FINAL de la matriz de diseno, por lo que
+          // weights = [b1, b2, ..., bk, b0]: hay que reordenar a [b0, b1, ..., bk].
+          if (w.length === xCols.length + 1) {
+            candidato = { beta: [w[w.length - 1]].concat(w.slice(0, w.length - 1)), nombre: 'ml-regression-multivariate-linear' };
+          }
+        }
+
+        if (candidato) {
+          const dif = maxDifRelativa(candidato.beta, base.beta);
+          if (dif <= 1e-6) { beta = candidato.beta; motor = candidato.nombre + ' (verificado contra el OLS)'; }
+          else {
+            // Con variables muy correlacionadas los dos metodos pueden diferir: se prioriza el OLS
+            console.warn('La libreria ' + candidato.nombre + ' difirio del OLS (diferencia relativa ' + dif + '). Se usan los coeficientes del OLS.');
+            motor = 'solver OLS interno (la libreria ' + candidato.nombre + ' difirió: posible multicolinealidad)';
+          }
+        }
+
+        // Predicciones recalculadas con los coeficientes del motor elegido
+        const pred = sample.y.map((_, i) => {
+          let yh = beta[0];
+          for (let j = 0; j < xCols.length; j++) yh += beta[j + 1] * sample.X[i][j];
+          return yh;
+        });
+        let sse = 0, sae = 0, yMean = 0;
+        sample.y.forEach((v) => { yMean += v; }); yMean /= sample.n;
+        let sst = 0;
+        sample.y.forEach((v, i) => { const e = v - pred[i]; sse += e * e; sae += Math.abs(e); sst += (v - yMean) * (v - yMean); });
+        const mse = sse / sample.n;
+        const r2 = sst === 0 ? 0 : 1 - sse / sst;
+
+        state.model = {
+          yCol: yCol, xCols: xCols, k: xCols.length, beta: beta, se: base.se, sigma2: base.sigma2,
+          r2: r2, r2adj: base.r2adj, mse: mse, rmse: Math.sqrt(mse), mae: sae / sample.n,
+          n: sample.n, totalValidos: sample.totalValidos, motor: motor,
+          X: sample.X, y: sample.y, pred: pred
+        };
+
+        renderModel(msg);
+      } catch (e) {
+        console.error(e);
+        msg.innerHTML = '<div class="alert alert-err">' + escapeHtml(e.message || String(e)) + '</div>';
+      }
+    }, 30);
+  }
+
+  function renderModel(msg) {
+    const m = state.model;
+    if (!m) return;
+    msg.innerHTML = '<div class="alert alert-ok">Modelo estimado con ' + fmtInt.format(m.n) + ' registros (' +
+      fmtInt.format(m.totalValidos) + ' válidos disponibles). Motor: ' + escapeHtml(m.motor) + '.</div>';
+
+    // --- Metricas de desempeno ---
+    const metricas = [
+      ['R²', m.r2.toFixed(4), 'coeficiente de determinación'],
+      ['R² ajustado', m.r2adj.toFixed(4), 'penaliza por nº de X'],
+      ['MSE', fmtNum.format(m.mse), 'error cuadrático medio'],
+      ['RMSE', fmtNum.format(m.rmse), 'raíz del MSE'],
+      ['MAE', fmtNum.format(m.mae), 'error absoluto medio'],
+      ['n', fmtInt.format(m.n), m.k + ' variable(s) X']
+    ];
+    $('metricsBox').innerHTML = metricas.map((x) =>
+      '<div class="metric"><div class="m-label">' + x[0] + '</div><div class="m-value">' + x[1] + '</div><div class="k-sub">' + x[2] + '</div></div>').join('');
+
+    // --- Ecuacion del modelo: Y = b0 + b1*X1 + b2*X2 + ... ---
+    let ecu = state.headers[m.yCol] + ' = ' + fmtNum.format(m.beta[0]);
+    for (let j = 0; j < m.xCols.length; j++) {
+      const b = m.beta[j + 1];
+      ecu += ' ' + (b >= 0 ? '+ ' : '- ') + fmtNum.format(Math.abs(b)) + ' · ' + state.headers[m.xCols[j]];
+    }
+    const ecuNum = m.beta.map((b) => fmtNum.format(b)).join(', ');
+    $('equationBox').style.display = 'block';
+    $('equationBox').innerHTML = '<div><b>ECUACIÓN DEL MODELO</b></div><div>' + escapeHtml(ecu) + '</div>' +
+      '<div style="margin-top:8px;color:#8A5008">Coeficientes [' + escapeHtml(ecuNum) + ']' +
+      (m.xCols.length === 1 ? ' &nbsp;→ <b>regresión simple</b>' : ' &nbsp;→ <b>regresión múltiple</b>') + '</div>';
+
+    // --- Tabla de coeficientes con error estandar y estadistico t ---
+    const filas = [];
+    filas.push({ nombre: '(Intercepto)', b: m.beta[0], se: m.se[0] });
+    m.xCols.forEach((c, j) => filas.push({ nombre: state.headers[c], b: m.beta[j + 1], se: m.se[j + 1] }));
+    filas.forEach((f) => { f.t = f.se > 0 ? f.b / f.se : 0; });
+    $('coefWrap').style.display = 'block';
+    $('coefTable').querySelector('tbody').innerHTML = filas.map((f) => {
+      const sig = Math.abs(f.t) >= 2.576 ? '***' : Math.abs(f.t) >= 1.96 ? '**' : Math.abs(f.t) >= 1.645 ? '*' : '';
+      return '<tr><td>' + escapeHtml(f.nombre) + '</td><td class="num">' + fmtNum.format(f.b) + '</td>' +
+        '<td class="num">' + fmtNum.format(f.se) + '</td><td class="num">' + fmtNum.format(f.t) + '</td><td>' + sig + '</td></tr>';
+    }).join('') + '<tr><td colspan="5" style="font-size:11.5px;color:#6B6B6B">Significancia del estadístico t: *** 1%, ** 5%, * 10%</td></tr>';
+
+    // Aviso de variables poco significativas (sintoma tipico de multicolinealidad)
+    const noSignif = filas.slice(1).filter((f) => Math.abs(f.t) < 1.96).map((f) => f.nombre);
+    if (noSignif.length) {
+      msg.innerHTML += '<div class="alert alert-err">Variables no significativas al 5%: <b>' + escapeHtml(noSignif.join(', ')) +
+        '</b>. Revise si están correlacionadas entre sí (multicolinealidad) o si no aportan al modelo.</div>';
+    }
+
+    renderModelChart();
+    buildPredictInputs();
+  }
+
+  /** Grafico del modelo:
+   *  - Regresion SIMPLE  : dispersion (X vs Y) + linea de tendencia ajustada.
+   *  - Regresion MULTIPLE: valores reales vs valores predichos + linea de ajuste perfecto. */
+  function renderModelChart() {
+    const m = state.model;
+    const MAXP = 2000;                       // limite de puntos para que el grafico siga siendo agil
+    const n = m.n;
+    const step = Math.max(1, Math.ceil(n / MAXP));
+    const puntos = [];
+    for (let i = 0; i < n; i += step) puntos.push(i);
+
+    if (m.xCols.length === 1) {
+      const xIdx = m.xCols[0];
+      const scatter = puntos.map((i) => ({ x: m.X[i][0], y: m.y[i] }));
+      let minX = Infinity, maxX = -Infinity;
+      scatter.forEach((p) => { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; });
+      const linea = [{ x: minX, y: m.beta[0] + m.beta[1] * minX }, { x: maxX, y: m.beta[0] + m.beta[1] * maxX }];
+      $('modelChartTitle').textContent = 'Diagrama de dispersión y línea de tendencia (regresión simple)';
+      $('modelChartNote').textContent = 'Eje X: ' + state.headers[xIdx] + ' · Eje Y: ' + state.headers[m.yCol] +
+        ' · Se grafican ' + fmtInt.format(scatter.length) + ' de ' + fmtInt.format(n) + ' registros usados en el modelo.';
+      dibujar('modelChart', {
+        type: 'scatter',
+        data: {
+          datasets: [
+            { label: 'Observaciones', data: scatter, backgroundColor: 'rgba(230,126,34,.55)', pointRadius: 3 },
+            { label: 'Línea de tendencia', data: linea, type: 'line', borderColor: '#C0392B', borderWidth: 2.5, pointRadius: 0, fill: false }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
+          scales: {
+            x: { title: { display: true, text: state.headers[xIdx], color: '#6B6B6B' }, grid: { color: '#F1E7DA' }, ticks: { callback: (v) => fmtCompact(v) } },
+            y: { title: { display: true, text: state.headers[m.yCol], color: '#6B6B6B' }, grid: { color: '#F1E7DA' }, ticks: { callback: (v) => fmtCompact(v) } }
+          }
+        }
+      });
+    } else {
+      const realVsPred = puntos.map((i) => ({ x: m.pred[i], y: m.y[i] }));
+      let min = Infinity, max = -Infinity;
+      realVsPred.forEach((p) => { if (p.x < min) min = p.x; if (p.x > max) max = p.x; if (p.y < min) min = p.y; if (p.y > max) max = p.y; });
+      $('modelChartTitle').textContent = 'Valores reales vs. valores predichos (regresión múltiple)';
+      $('modelChartNote').textContent = 'Cada punto es un registro: el eje X muestra la predicción del modelo y el eje Y el valor real. ' +
+        'Cuanto más cerca de la línea roja (45°), mejor el ajuste. Se grafican ' + fmtInt.format(realVsPred.length) + ' de ' + fmtInt.format(n) + ' registros.';
+      dibujar('modelChart', {
+        type: 'scatter',
+        data: {
+          datasets: [
+            { label: 'Registros', data: realVsPred, backgroundColor: 'rgba(46,134,193,.55)', pointRadius: 3 },
+            { label: 'Ajuste perfecto (y = ŷ)', data: [{ x: min, y: min }, { x: max, y: max }], type: 'line', borderColor: '#C0392B', borderWidth: 2.5, pointRadius: 0, fill: false }
+          ]
+        },
+        options: {
+          responsive: true, maintainAspectRatio: false,
+          plugins: { legend: { labels: { boxWidth: 12, font: { size: 11 } } } },
+          scales: {
+            x: { title: { display: true, text: state.headers[m.yCol] + ' (predicho)', color: '#6B6B6B' }, grid: { color: '#F1E7DA' }, ticks: { callback: (v) => fmtCompact(v) } },
+            y: { title: { display: true, text: state.headers[m.yCol] + ' (real)', color: '#6B6B6B' }, grid: { color: '#F1E7DA' }, ticks: { callback: (v) => fmtCompact(v) } }
+          }
+        }
+      });
+    }
+  }
+
+  /* ============================================================
+     7. SIMULADOR DE PREDICCIONES
+     ------------------------------------------------------------
+     Genera un input numerico por cada X del modelo. La prediccion
+     aplica directamente la ecuacion estimada:
+        y_hat = b0 + b1*x1 + ... + bk*xk
+     y muestra un intervalo aproximado del 95% (± 1.96 * RMSE).
+     ============================================================ */
+  function buildPredictInputs() {
+    const m = state.model;
+    if (!m) return;
+    $('predictInputs').innerHTML = m.xCols.map((c, j) => {
+      // Valor por defecto: promedio de la variable en la muestra usada
+      let suma = 0; m.X.forEach((x) => { suma += x[j]; });
+      const prom = m.n ? suma / m.n : 0;
+      return '<div><label class="fld">X' + (j + 1) + ': ' + escapeHtml(state.headers[c]) + ' (media ' + fmtCompact(prom) + ')</label>' +
+        '<input type="number" step="any" data-x="' + j + '" value="' + (Math.round(prom * 100) / 100) + '" /></div>';
+    }).join('');
+    $('predVarName').textContent = state.headers[m.yCol];
+    $('btnPredict').disabled = false;
+    $('predBox').classList.remove('on');
+  }
+
+  $('btnPredict').addEventListener('click', () => {
+    const m = state.model;
+    if (!m) return;
+    const inputs = Array.from($('predictInputs').querySelectorAll('input[data-x]'));
+    const valores = inputs.map((inp) => {
+      const v = parseNum(inp.value);
+      return v === null ? 0 : v;
+    });
+    let yh = m.beta[0];
+    m.xCols.forEach((_, j) => { yh += m.beta[j + 1] * valores[j]; });
+
+    $('predBox').classList.add('on');
+    $('predValue').textContent = fmtNum.format(yh);
+    $('predDetail').innerHTML = 'Intervalo aproximado al 95%: <b>' + fmtNum.format(yh - 1.96 * m.rmse) + '</b> a <b>' +
+      fmtNum.format(yh + 1.96 * m.rmse) + '</b> &nbsp;·&nbsp; RMSE del modelo: ' + fmtNum.format(m.rmse) +
+      '<br>' + escapeHtml(valores.map((v, j) => state.headers[m.xCols[j]] + ' = ' + fmtNum.format(v)).join(' · '));
+  });
+
+  /* ============================================================
+     NAVEGACION POR PESTAÑAS
+     ============================================================ */
+  function showTab(name) {
+    document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('active', t.getAttribute('data-tab') === name));
+    document.querySelectorAll('.tab-panel').forEach((p) => p.classList.toggle('active', p.id === 'tab-' + name));
+    // Al mostrar una pestana se vuelven a dibujar sus graficos: un canvas creado mientras
+    // el panel estaba oculto conserva dimensiones 0x0 hasta que se redibuja.
+    if (!state.rows.length) return;
+    if (name === 'carga') renderExplore(parseInt($('exploreCol').value, 10) || 0);
+    if (name === 'dashboard') refreshDashboard();
+    if (name === 'modelo' && state.model) renderModelChart();
+  }
+  document.querySelectorAll('.tab').forEach((t) => t.addEventListener('click', () => showTab(t.getAttribute('data-tab'))));
+})();
+</script>
+</body>
+</html>
